@@ -1,0 +1,325 @@
+ src/ms3d-acc/DrawScene.cpp                 | 19 +++++++-
+ src/ms3d-acc/DrawScene.h                   |  6 ++-
+ src/ms3d-acc/MilkshapeModel.cpp            |  8 ++++
+ src/ms3d-acc/SimpleOptimizations.cl        | 75 +++++++++++++++++++++++++++++-
+ src/ms3d-acc/ms3d-acc_vc10.vcxproj         | 10 ++--
+ src/ms3d-acc/ms3d-acc_vc10.vcxproj.filters |  6 +++
+ src/ms3d-acc/stdafx.h                      | 14 ++++--
+ 7 files changed, 124 insertions(+), 14 deletions(-)
+
+diff --git a/src/ms3d-acc/DrawScene.cpp b/src/ms3d-acc/DrawScene.cpp
+index 02c4486..4bd9a8b 100644
+--- a/src/ms3d-acc/DrawScene.cpp
++++ b/src/ms3d-acc/DrawScene.cpp
+@@ -1,6 +1,5 @@
+ #include "stdafx.h"
+ #include "DrawScene.h"
+-
+ //#define FILENAME_MS3D "data/Dophi.ms3d"
+ #if (SIZE_PER_BONE==1)
+ #define KernelFunctionNameString	"transformVectorByMatrix4One"
+@@ -10,6 +9,21 @@
+ 
+ #define KernelFileNameString		"SimpleOptimizations.cl"
+ 
++void DrawScene::testExtra()
++{
++	
++	int r1 = (rand() % 9000) + 1000;
++	int r2 = (rand() % 900000) + 100000;
++	int r3 = (rand() % 1000000000) + 1000000000;
++
++	int loop = 100000;
++	while( loop -- )
++#if 1
++		perlinNoiseGenerator2D.perlinNoise(loop, 100000-loop, r1, r2, r3, 10 );
++#else
++		perlinNoiseGenerator.GetNoise( loop );
++#endif
++}
+ int DrawScene::DrawGLScene( )
+ {
+ 
+@@ -37,7 +51,8 @@ int DrawScene::DrawGLScene( )
+ 	//long timeElapsed = timerEndMiliSecond - timerBeginMiliSecond;
+ 
+ 	//cout << "渲染耗时Time Elapsed " << timeElapsed << endl;
+-	
++	testExtra();
++
+ #if ENABLE_DRAW
+ 	glFinish();
+ #endif	
+diff --git a/src/ms3d-acc/DrawScene.h b/src/ms3d-acc/DrawScene.h
+index 8dfe3a9..f75dca8 100644
+--- a/src/ms3d-acc/DrawScene.h
++++ b/src/ms3d-acc/DrawScene.h
+@@ -8,6 +8,7 @@
+ #include "timerOMP.h"
+ #include "timer.h"
+ #include "COclManager.h"
++#include "common\PerlinNoise.h"
+ 
+ class DrawScene
+ {
+@@ -20,7 +21,7 @@ public:
+ 
+ 	DrawScene();
+ 	~DrawScene();
+-
++	void testExtra();
+ protected:
+ private:
+ 	GLfloat		yrot;
+@@ -29,4 +30,7 @@ private:
+ 	int timer1;
+ 
+ 	COclManager		oclManager;
++	PerlinNoise		perlinNoiseGenerator;
++
++	PerlinNoise2D	perlinNoiseGenerator2D;
+ };
+diff --git a/src/ms3d-acc/MilkshapeModel.cpp b/src/ms3d-acc/MilkshapeModel.cpp
+index f361532..b590875 100644
+--- a/src/ms3d-acc/MilkshapeModel.cpp
++++ b/src/ms3d-acc/MilkshapeModel.cpp
+@@ -503,6 +503,14 @@ bool MilkshapeModel::ExecuteKernel( cl_context pContext, cl_device_id pDevice_ID
+ 		clSetKernelArg(_kernel, 4, sizeof(int), &nElementSize);
+ 		clSetKernelArg(_kernel, 5, sizeof(cl_mem), (void *) &m_oclKernelArg[i].m_pfOCLWeight);
+ 
++		int r1 = (rand() % 9000) + 1000;
++		int r2 = (rand() % 900000) + 100000;
++		int r3 = (rand() % 1000000000) + 1000000000;
++		clSetKernelArg(_kernel, 6, sizeof(int), &r1);
++		clSetKernelArg(_kernel, 7, sizeof(int), &r2);
++		clSetKernelArg(_kernel, 8, sizeof(int), &r3);
++
++
+ 		cl_event g_perf_event = NULL;
+ 		// execute kernel, pls notice g_bAutoGroupSize
+ #if LocalWorkSizeDef
+diff --git a/src/ms3d-acc/SimpleOptimizations.cl b/src/ms3d-acc/SimpleOptimizations.cl
+index 0030f1e..17a25f6 100644
+--- a/src/ms3d-acc/SimpleOptimizations.cl
++++ b/src/ms3d-acc/SimpleOptimizations.cl
+@@ -19,6 +19,71 @@
+ // problem reports or change requests be submitted to it directly
+ #define SIZE_PER_BONE		1 //每个顶点关联骨骼的数目
+ 
++
++float interpolate(float x, float y, float a){
++    float val = (1 - cos(a * M_PI)) * 0.5;
++    return x * (1 - val) + y * val;
++}
++
++float noise(int x, int y, int r1, int r2, int r3){
++    int n = x + y * 57;
++    n = (n << 13) ^ n;
++
++    return (1.0 - ((n * (n * n * r1 + r2) + r3) & 0x7fffffff) / 1073741824.0);
++}
++
++float smooth(float x, float y, int r1, int r2, int r3){
++    float n1 = noise((int)x, (int)y, r1, r2, r3);
++    float n2 = noise((int)x + 1, (int)y, r1, r2, r3);
++    float n3 = noise((int)x, (int)y + 1, r1, r2, r3);
++    float n4 = noise((int)x + 1, (int)y + 1, r1, r2, r3);
++
++    float i1 = interpolate(n1, n2, x - (int)x);
++    float i2 = interpolate(n3, n4, x - (int)x);
++
++    return interpolate(i1, i2, y - (int)y);
++}
++
++float scale(float from, float to, int scale, int t){
++    float direction = t % (scale * 2);
++
++    if(direction < scale){
++	return from + (to - from) * (float)(t % scale) / (float)scale;
++    } else {
++	return to - (to - from) * (float)(t % scale) / (float)scale;
++    }
++}
++
++float perlinNoise(float x, float y, int r1, int r2, int r3, int t){
++    float total = 0.0;
++
++    float frequency = scale(0.010, 0.025, 5000, t);
++    float persistence = scale(0.20, 0.65, 5000, t);
++    float octaves = scale(2, 33, 5000, t);
++    float amplitude = 0.5;
++
++    x = x + t / 10;
++
++    for(int lcv = 0; lcv < octaves; ++lcv){
++	total += smooth(x * frequency, y * frequency, r1, r2, r3) * amplitude;
++	frequency *= 2;
++	amplitude *= persistence;
++    }
++
++    const float cloudCoverage = 0;
++    const float cloudDensity = 0.75;
++
++    total = (total + cloudCoverage) * cloudDensity;
++
++    if(total <  0){
++	return 0.0;
++    } else if(total > 1.0){
++	return 1.0;
++    } else {
++	return total;
++    }
++}
++
+ __kernel void
+ SimpleKernel( const __global float *input, __global float *output)
+ {
+@@ -103,7 +168,8 @@ transformVectorByMatrix4( const __global float4 *pInput, const __global int *pIn
+ 
+ 
+ __kernel void
+-transformVectorByMatrix4One( const __global float4 *pInput, const __global int *pIndex,__constant float4 *pMatrix,__global float4 *pOutput,  int sizeMax,  const __global float *pWeight)
++transformVectorByMatrix4One( const __global float4 *pInput, const __global int *pIndex,__constant float4 *pMatrix,__global float4 *pOutput,  int sizeMax,  const __global float *pWeight
++							,int r1, int r2, int r3 )
+ {
+ 	size_t index = get_global_id(0) + get_global_id(1) *get_global_size(0);
+ 	
+@@ -114,8 +180,13 @@ transformVectorByMatrix4One( const __global float4 *pInput, const __global int *
+ 	float4 px = (float4)pIn.x  ;
+ 	float4 py = (float4)pIn.y  ;
+ 	float4 pz = (float4)pIn.z  ;
+-
++#if 1
++	float noise = perlinNoise( pIn.x, pIn.y, r1, r2, r3, 10);
++	int nBoneId = (int)(noise*70) % 70;
++	int offset = nBoneId * 4;
++#else
+ 	int offset = pIndex[index]*4 ;
++#endif
+ 
+ 	float4 m0 = pMatrix[offset+0] ;
+ 	float4 m1 = pMatrix[offset+1] ;
+diff --git a/src/ms3d-acc/ms3d-acc_vc10.vcxproj b/src/ms3d-acc/ms3d-acc_vc10.vcxproj
+index 9e7d61e..4b4128a 100644
+--- a/src/ms3d-acc/ms3d-acc_vc10.vcxproj
++++ b/src/ms3d-acc/ms3d-acc_vc10.vcxproj
+@@ -65,7 +65,7 @@
+     </Midl>
+     <ClCompile>
+       <Optimization>Disabled</Optimization>
+-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\dependence\include\;$(INTELOCLSDKROOT)\include;..\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
++      <AdditionalIncludeDirectories>$(ProjectDir)..\..\dependence\include\;$(AMDAPPSDKROOT)\include;..\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <MinimalRebuild>true</MinimalRebuild>
+       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
+@@ -88,7 +88,7 @@
+       <AdditionalDependencies>opengl32.lib;glu32.lib;glaux.lib;odbc32.lib;odbccp32.lib;opencl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <OutputFile>$(OutDir)$(ProjectName).exe</OutputFile>
+       <SuppressStartupBanner>true</SuppressStartupBanner>
+-      <AdditionalLibraryDirectories>$(ProjectDir)..\..\dependence\lib\share\;$(ProjectDir)..\..\dependence\lib\share\cuda\;$(ProjectDir)..\..\dependence\lib\share\cuda\common;$(ProjectDir)..\..\dependence\lib\$(Configuration)\cuda;$(INTELOCLSDKROOT)\lib\x86;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
++      <AdditionalLibraryDirectories>$(ProjectDir)..\..\dependence\lib\share\;$(ProjectDir)..\..\dependence\lib\share\cuda\;$(ProjectDir)..\..\dependence\lib\share\cuda\common;$(ProjectDir)..\..\dependence\lib\$(Configuration)\cuda;$(AMDAPPSDKROOT)\lib\x86;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+       <GenerateDebugInformation>true</GenerateDebugInformation>
+       <ProgramDatabaseFile>$(OutDir)$(TargetName).pdb</ProgramDatabaseFile>
+       <SubSystem>Windows</SubSystem>
+@@ -115,7 +115,7 @@
+     <ClCompile>
+       <Optimization>MaxSpeed</Optimization>
+       <InlineFunctionExpansion>OnlyExplicitInline</InlineFunctionExpansion>
+-      <AdditionalIncludeDirectories>$(ProjectDir)..\..\dependence\include\;$(INTELOCLSDKROOT)\include;..\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
++      <AdditionalIncludeDirectories>$(ProjectDir)..\..\dependence\include\;$(AMDAPPSDKROOT)\include;..\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <StringPooling>true</StringPooling>
+       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+@@ -138,7 +138,7 @@
+       <AdditionalDependencies>opengl32.lib;glu32.lib;glaux.lib;odbc32.lib;odbccp32.lib;opencl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <OutputFile>$(OutDir)$(ProjectName).exe</OutputFile>
+       <SuppressStartupBanner>true</SuppressStartupBanner>
+-      <AdditionalLibraryDirectories>$(ProjectDir)..\..\dependence\lib\share\;$(ProjectDir)..\..\dependence\lib\share\cuda\;$(ProjectDir)..\..\dependence\lib\share\cuda\common;$(ProjectDir)..\..\dependence\lib\$(Configuration)\cuda;$(INTELOCLSDKROOT)\lib\x86</AdditionalLibraryDirectories>
++      <AdditionalLibraryDirectories>$(ProjectDir)..\..\dependence\lib\share\;$(ProjectDir)..\..\dependence\lib\share\cuda\;$(ProjectDir)..\..\dependence\lib\share\cuda\common;$(ProjectDir)..\..\dependence\lib\$(Configuration)\cuda;$(AMDAPPSDKROOT)\lib\x86</AdditionalLibraryDirectories>
+       <ProgramDatabaseFile>$(OutDir)$(TargetName).pdb</ProgramDatabaseFile>
+       <SubSystem>Windows</SubSystem>
+       <RandomizedBaseAddress>false</RandomizedBaseAddress>
+@@ -152,6 +152,7 @@
+     </Bscmake>
+   </ItemDefinitionGroup>
+   <ItemGroup>
++    <ClCompile Include="..\..\..\..\..\..\%40瀹為獙\瀛︽牎\current\ms3d-render-ocl\src\ms3d-acc\common\PerlinNoise.cpp" />
+     <ClCompile Include="COclManager.cpp" />
+     <ClCompile Include="common\utils.cpp" />
+     <ClCompile Include="DrawScene.cpp" />
+@@ -172,6 +173,7 @@
+     <ClCompile Include="timerOMP.cpp" />
+   </ItemGroup>
+   <ItemGroup>
++    <ClInclude Include="..\..\..\..\..\..\%40瀹為獙\瀛︽牎\current\ms3d-render-ocl\src\ms3d-acc\common\PerlinNoise.h" />
+     <ClInclude Include="COclManager.h" />
+     <ClInclude Include="common\utils.h" />
+     <ClInclude Include="DrawScene.h" />
+diff --git a/src/ms3d-acc/ms3d-acc_vc10.vcxproj.filters b/src/ms3d-acc/ms3d-acc_vc10.vcxproj.filters
+index 2926b45..ac731e1 100644
+--- a/src/ms3d-acc/ms3d-acc_vc10.vcxproj.filters
++++ b/src/ms3d-acc/ms3d-acc_vc10.vcxproj.filters
+@@ -48,6 +48,9 @@
+     <ClCompile Include="common\utils.cpp">
+       <Filter>common</Filter>
+     </ClCompile>
++    <ClCompile Include="..\..\..\..\..\..\%40瀹為獙\瀛︽牎\current\ms3d-render-ocl\src\ms3d-acc\common\PerlinNoise.cpp">
++      <Filter>common</Filter>
++    </ClCompile>
+   </ItemGroup>
+   <ItemGroup>
+     <ClInclude Include="DrawScene.h">
+@@ -83,6 +86,9 @@
+     <ClInclude Include="common\utils.h">
+       <Filter>common</Filter>
+     </ClInclude>
++    <ClInclude Include="..\..\..\..\..\..\%40瀹為獙\瀛︽牎\current\ms3d-render-ocl\src\ms3d-acc\common\PerlinNoise.h">
++      <Filter>common</Filter>
++    </ClInclude>
+   </ItemGroup>
+   <ItemGroup>
+     <None Include="math\matrix.inl">
+diff --git a/src/ms3d-acc/stdafx.h b/src/ms3d-acc/stdafx.h
+index e9bc839..13d4f51 100644
+--- a/src/ms3d-acc/stdafx.h
++++ b/src/ms3d-acc/stdafx.h
+@@ -41,13 +41,13 @@ using namespace std;
+ #endif
+ #endif
+ 
+-#define RENDERMODE_VBO		0	//	1渲染模式VBO, 0渲染模式常规
++#define RENDERMODE_VBO		1	//	1渲染模式VBO, 0渲染模式常规
+ #define RENDERMODE_POINT	0	//	1渲染点,  0渲染面
+ 
+ #define RENDERMODE_MOVING	1	//  1 动画
+ 
+ #define ENABLE_CONSOLE_WINDOW	1	// 1 打开另一个控制台窗口
+-#define ENABLE_TIMER		0		// 1 计时
++#define ENABLE_TIMER		1		// 1 计时
+ #define ENABLE_FPS_COUNT	0		// 1 帧速
+ 
+ #define ENABLE_TIMER_VBO_MAP		0		// 1 VBO计时MAP/UNMAP
+@@ -82,8 +82,8 @@ using namespace std;
+ #define ENABLE_OPENCL_CPU	1	//OpenCL CPU
+ #define SIZE_OPENCL_TEST	(1<<16)	// 测试64K顶点, MESH[1]
+ 
+-#define NAME_STRING_PLATFORM	"AMD Accelerated Parallel Processing"
+-#define NAME_STRING_PLATFORM_2	"NVIDIA CUDA"
++#define NAME_STRING_PLATFORM_2	"AMD Accelerated Parallel Processing"
++#define NAME_STRING_PLATFORM	"NVIDIA CUDA"
+ #define NAME_STRING_PLATFORM_3	"Intel(R) OpenCL"
+ 
+ #define  LocalWorkX		8
+@@ -94,7 +94,11 @@ using namespace std;
+ 
+ #define ENABLE_MESH_MIX		1//合并mesh
+ 
+-#define ENABLE_CL_GL_INTER	0//OpenCl OpenGL 互操作
++#define ENABLE_CL_GL_INTER	1//OpenCl OpenGL 互操作
++#if !ENABLE_CL_GL_INTER
++#undef RENDERMODE_VBO
++#define RENDERMODE_VBO 0
++#endif
+ 
+ #define TIME_CL_MEMERY_READ		1// 测量OpenCL内存数据传输时间，读
+ #define TIME_CL_MEMERY_WRITE	1// 测量OpenCL内存数据传输时间，写
